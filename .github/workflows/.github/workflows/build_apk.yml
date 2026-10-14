@@ -1,0 +1,38 @@
+name: Build Flutter APK Automatically
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # يسمح لك بتشغيل البناء يدوياً بزر واحد
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. سحب الكود من المستودع
+        uses: actions/checkout@v4
+
+      - name: 2. إعداد بيئة Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: 3. تثبيت Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: 4. توليد ملفات الأندرويد ودمج الكود وبناء الـ APK
+        run: |
+          flutter create --project-name spark_catcher temp_project
+          cp main.dart temp_project/lib/main.dart
+          cd temp_project
+          flutter build apk --release
+
+      - name: 5. رفع ملف الـ APK الجاهز للتحميل
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spark-Catcher-APK
+          path: temp_project/build/app/outputs/flutter-apk/app-release.apk
