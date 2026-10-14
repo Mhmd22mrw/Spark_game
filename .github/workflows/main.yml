@@ -1,0 +1,38 @@
+name: Build Flutter APK Automatically
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout code
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: 3. Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: 4. Build APK
+        run: |
+          flutter create --project-name spark_catcher temp_project
+          cp main.dart temp_project/lib/main.dart
+          cd temp_project
+          flutter build apk --release
+
+      - name: 5. Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spark-Catcher-APK
+          path: temp_project/build/app/outputs/flutter-apk/app-release.apk
