@@ -4,13 +4,10 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-void main() {
-  runApp(const PasswordVaultApp());
-}
+void main() => runApp(const VaultApp());
 
-class PasswordVaultApp extends StatelessWidget {
-  const PasswordVaultApp({super.key});
-
+class VaultApp extends StatelessWidget {
+  const VaultApp({super.key});
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -18,278 +15,124 @@ class PasswordVaultApp extends StatelessWidget {
       title: 'خزنتي الشخصية',
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0F172A),
-        primaryColor: Colors.tealAccent,
         colorScheme: const ColorScheme.dark(
           primary: Colors.tealAccent,
           secondary: Colors.amberAccent,
           surface: Color(0xFF1E293B),
         ),
       ),
-      home: const Directionality(
-        textDirection: TextDirection.rtl,
-        child: LockScreen(),
-      ),
+      home: const Directionality(textDirection: TextDirection.rtl, child: LockPage()),
     );
   }
 }
 
-// نموذج بيانات الحساب الشخصي
-class PasswordItem {
-  String id;
-  String title;
-  String username;
-  String password;
-  String notes;
-  String category;
-
-  PasswordItem({
-    required this.id,
-    required this.title,
-    required this.username,
-    required this.password,
-    this.notes = '',
-    required this.category,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'username': username,
-        'password': password,
-        'notes': notes,
-        'category': category,
-      };
-
-  factory PasswordItem.fromJson(Map<String, dynamic> json) => PasswordItem(
-        id: json['id'] ?? '',
-        title: json['title'] ?? '',
-        username: json['username'] ?? '',
-        password: json['password'] ?? '',
-        notes: json['notes'] ?? '',
-        category: json['category'] ?? 'حسابات وإيميلات',
-      );
+class PassItem {
+  String id, title, user, pass, notes, cat;
+  PassItem({required this.id, required this.title, required this.user, required this.pass, this.notes = '', this.cat = 'حسابات'});
+  Map<String, dynamic> toJson() => {'id': id, 't': title, 'u': user, 'p': pass, 'n': notes, 'c': cat};
+  factory PassItem.fromJson(Map<String, dynamic> j) => PassItem(
+    id: j['id'] ?? '', title: j['t'] ?? '', user: j['u'] ?? '', pass: j['p'] ?? '', notes: j['n'] ?? '', cat: j['c'] ?? 'حسابات',
+  );
 }
 
-// خدمة الحفظ المحلي والتشفير داخل الهاتف
-class VaultStorage {
-  static File get _file {
-    final dir = Directory.systemTemp.path.replaceAll('/cache', '/files');
-    final targetDir = Directory(dir);
-    if (!targetDir.existsSync()) {
-      return File('${Directory.systemTemp.path}/my_personal_vault.dat');
-    }
-    return File('${targetDir.path}/my_personal_vault.dat');
+class Storage {
+  static File get _f {
+    final d = Directory(Directory.systemTemp.path.replaceAll('/cache', '/files'));
+    return File('${d.existsSync() ? d.path : Directory.systemTemp.path}/my_vault_v2.dat');
   }
-
-  static String encryptData(String input) {
-    final bytes = utf8.encode(input);
-    final shifted = bytes.map((b) => b ^ 73).toList();
-    return base64Encode(shifted);
+  static String enc(String s) => base64Encode(utf8.encode(s).map((b) => b ^ 73).toList());
+  static String dec(String s) {
+    try { return utf8.decode(base64Decode(s.trim()).map((b) => b ^ 73).toList()); } catch (_) { return ''; }
   }
-
-  static String decryptData(String input) {
+  static Future<Map<String, dynamic>> load() async {
     try {
-      final shifted = base64Decode(input.trim());
-      final bytes = shifted.map((b) => b ^ 73).toList();
-      return utf8.decode(bytes);
-    } catch (_) {
-      return '';
-    }
-  }
-
-  static Future<Map<String, dynamic>> loadVault() async {
-    try {
-      if (await _file.exists()) {
-        final raw = await _file.readAsString();
-        final decoded = decryptData(raw);
-        if (decoded.isNotEmpty) {
-          return jsonDecode(decoded) as Map<String, dynamic>;
-        }
+      if (await _f.exists()) {
+        final d = dec(await _f.readAsString());
+        if (d.isNotEmpty) return jsonDecode(d);
       }
     } catch (_) {}
-    return {'pin': '', 'defaultEmail': '', 'items': []};
+    return {'pin': '', 'email': '', 'items': []};
   }
-
-  static Future<void> saveVault(
-      String pin, String defaultEmail, List<PasswordItem> items) async {
-    final data = {
-      'pin': pin,
-      'defaultEmail': defaultEmail,
-      'items': items.map((e) => e.toJson()).toList(),
-    };
-    final encoded = encryptData(jsonEncode(data));
-    await _file.writeAsString(encoded);
+  static Future<void> save(String pin, String email, List<PassItem> items) async {
+    await _f.writeAsString(enc(jsonEncode({'pin': pin, 'email': email, 'items': items.map((e) => e.toJson()).toList()})));
   }
 }
 
-// شاشة القفل بالرقم السري
-class LockScreen extends StatefulWidget {
-  const LockScreen({super.key});
-
+class LockPage extends StatefulWidget {
+  const LockPage({super.key});
   @override
-  State<LockScreen> createState() => _LockScreenState();
+  State<LockPage> createState() => _LockPageState();
 }
 
-class _LockScreenState extends State<LockScreen> {
-  String savedPin = '';
-  String defaultEmail = '';
-  String enteredPin = '';
-  List<PasswordItem> items = [];
-  bool isLoading = true;
-  String errorMessage = '';
+class _LockPageState extends State<LockPage> {
+  String savedPin = '', email = '', pin = '', err = '';
+  List<PassItem> items = [];
+  bool loading = true;
 
   @override
   void initState() {
     super.initState();
-    _initData();
-  }
-
-  Future<void> _initData() async {
-    final data = await VaultStorage.loadVault();
-    final rawItems = (data['items'] as List?) ?? [];
-    setState(() {
-      savedPin = (data['pin'] ?? '').toString();
-      defaultEmail = (data['defaultEmail'] ?? '').toString();
-      items = rawItems
-          .map((e) => PasswordItem.fromJson(Map<String, dynamic>.from(e)))
-          .toList();
-      isLoading = false;
+    Storage.load().then((d) {
+      setState(() {
+        savedPin = (d['pin'] ?? '').toString();
+        email = (d['email'] ?? '').toString();
+        items = ((d['items'] as List?) ?? []).map((e) => PassItem.fromJson(Map<String, dynamic>.from(e))).toList();
+        loading = false;
+      });
     });
   }
 
-  void _onNumberPress(String num) {
-    if (enteredPin.length < 4) {
-      setState(() {
-        enteredPin += num;
-        errorMessage = '';
-      });
-      if (enteredPin.length == 4) {
-        _verifyOrSetPin();
+  void _press(String n) async {
+    if (pin.length < 4) setState(() { pin += n; err = ''; });
+    if (pin.length == 4) {
+      if (savedPin.isEmpty) {
+        savedPin = pin;
+        items.add(PassItem(id: '1', title: 'إيميلي الشخصي الرئيسي', user: 'اضغط القلم ✏️ لكتابة إيميلك', pass: 'كلمة المرور', notes: 'الحساب الأساسي'));
+        await Storage.save(savedPin, email, items);
+        _go();
+      } else if (pin == savedPin) {
+        _go();
+      } else {
+        setState(() { pin = ''; err = 'الرقم السري غير صحيح!'; });
       }
     }
   }
 
-  void _onBackspace() {
-    if (enteredPin.isNotEmpty) {
-      setState(() {
-        enteredPin = enteredPin.substring(0, enteredPin.length - 1);
-      });
-    }
-  }
-
-  Future<void> _verifyOrSetPin() async {
-    if (savedPin.isEmpty) {
-      savedPin = enteredPin;
-      // إضافة بطاقة ترحيبية جاهزة للإيميل الشخصي عند أول تشغيل
-      items.add(
-        PasswordItem(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          title: 'إيميلي الشخصي الرئيسي (Gmail)',
-          username: 'اضغط على القلم ✏️ لكتابة إيميلك',
-          password: 'اكتب كلمة المرور هنا',
-          notes: 'الحساب الأساسي المرتبط بكل حساباتي',
-          category: 'حسابات وإيميلات',
-        ),
-      );
-      await VaultStorage.saveVault(savedPin, defaultEmail, items);
-      _openVault();
-    } else if (enteredPin == savedPin) {
-      _openVault();
-    } else {
-      setState(() {
-        enteredPin = '';
-        errorMessage = 'الرقم السري غير صحيح!';
-      });
-    }
-  }
-
-  void _openVault() {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => Directionality(
-          textDirection: TextDirection.rtl,
-          child: VaultHomeScreen(
-            pin: savedPin,
-            initialDefaultEmail: defaultEmail,
-            initialItems: items,
-          ),
-        ),
-      ),
-    );
-  }
+  void _go() => Navigator.pushReplacement(context, MaterialPageRoute(
+    builder: (_) => Directionality(textDirection: TextDirection.rtl, child: HomePage(pin: savedPin, initEmail: email, initItems: items)),
+  ));
 
   @override
   Widget build(BuildContext context) {
-    if (isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    final isFirstTime = savedPin.isEmpty;
-
+    if (loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
+        child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.lock_person_rounded, size: 76, color: Colors.tealAccent),
-              const SizedBox(height: 16),
-              Text(
-                isFirstTime ? 'إنشاء رقم سري لخزنتك' : 'أدخل الرقم السري للفتح',
-                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                isFirstTime
-                    ? 'اختر 4 أرقام لحماية إيميلك وكلمات مرورك'
-                    : 'جميع كلمات مرورك مشفرة ومحفوظة على هاتفك',
-                style: const TextStyle(color: Colors.white60, fontSize: 14),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 32),
+              const Icon(Icons.shield_rounded, size: 70, color: Colors.tealAccent),
+              const SizedBox(height: 12),
+              Text(savedPin.isEmpty ? 'اختر 4 أرقام لقفل خزنتك' : 'أدخل الرقم السري للفتح', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 24),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(4, (index) {
-                  final filled = index < enteredPin.length;
-                  return Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 10),
-                    width: 22,
-                    height: 22,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: filled ? Colors.tealAccent : Colors.transparent,
-                      border: Border.all(color: Colors.tealAccent, width: 2),
-                    ),
-                  );
-                }),
+                children: List.generate(4, (i) => Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 8), width: 20, height: 20,
+                  decoration: BoxDecoration(shape: BoxShape.circle, color: i < pin.length ? Colors.tealAccent : Colors.transparent, border: Border.all(color: Colors.tealAccent, width: 2)),
+                )),
               ),
-              if (errorMessage.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Text(
-                  errorMessage,
-                  style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
-                ),
-              ],
-              const SizedBox(height: 40),
+              if (err.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: Text(err, style: const TextStyle(color: Colors.redAccent))),
+              const SizedBox(height: 30),
               SizedBox(
-                width: 280,
+                width: 260,
                 child: GridView.count(
-                  shrinkWrap: true,
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  physics: const NeverScrollableScrollPhysics(),
+                  shrinkWrap: true, crossAxisCount: 3, mainAxisSpacing: 12, crossAxisSpacing: 12,
                   children: [
-                    for (var i = 1; i <= 9; i++) _buildKeyButton('$i'),
+                    for (var i = 1; i <= 9; i++) ElevatedButton(onPressed: () => _press('$i'), child: Text('$i', style: const TextStyle(fontSize: 22))),
                     const SizedBox.shrink(),
-                    _buildKeyButton('0'),
-                    IconButton(
-                      onPressed: _onBackspace,
-                      icon: const Icon(Icons.backspace_outlined, size: 28, color: Colors.white70),
-                    ),
+                    ElevatedButton(onPressed: () => _press('0'), child: const Text('0', style: TextStyle(fontSize: 22))),
+                    IconButton(onPressed: () => setState(() { if (pin.isNotEmpty) pin = pin.substring(0, pin.length - 1); }), icon: const Icon(Icons.backspace_outlined)),
                   ],
                 ),
               ),
@@ -299,224 +142,129 @@ class _LockScreenState extends State<LockScreen> {
       ),
     );
   }
-
-  Widget _buildKeyButton(String num) {
-    return ElevatedButton(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: const Color(0xFF1E293B),
-        foregroundColor: Colors.white,
-        shape: const CircleBorder(),
-        padding: const EdgeInsets.all(16),
-      ),
-      onPressed: () => _onNumberPress(num),
-      child: Text(
-        num,
-        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
 }
 
-// الشاشة الرئيسية لإدارة الإيميلات وكلمات المرور
-class VaultHomeScreen extends StatefulWidget {
-  final String pin;
-  final String initialDefaultEmail;
-  final List<PasswordItem> initialItems;
-
-  const VaultHomeScreen({
-    super.key,
-    required this.pin,
-    required this.initialDefaultEmail,
-    required this.initialItems,
-  });
-
+class HomePage extends StatefulWidget {
+  final String pin, initEmail;
+  final List<PassItem> initItems;
+  const HomePage({super.key, required this.pin, required this.initEmail, required this.initItems});
   @override
-  State<VaultHomeScreen> createState() => _VaultHomeScreenState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class _VaultHomeScreenState extends State<VaultHomeScreen> {
-  late List<PasswordItem> items;
-  late String defaultEmail;
-  String searchQuery = '';
-  String selectedCategory = 'الكل';
-  final Set<String> visiblePasswords = {};
+class _HomePageState extends State<HomePage> {
+  late List<PassItem> items = List.from(widget.initItems);
+  late String myEmail = widget.initEmail;
+  String search = '';
+  final Set<String> shown = {};
 
-  final List<String> categories = [
-    'الكل',
-    'حسابات وإيميلات',
-    'تواصل اجتماعي',
-    'بنوك ومحافظ',
-    'شبكات Wi-Fi',
-    'أخرى'
-  ];
+  void _save() => Storage.save(widget.pin, myEmail, items);
 
-  @override
-  void initState() {
-    super.initState();
-    items = List.from(widget.initialItems);
-    defaultEmail = widget.initialDefaultEmail;
+  void _copy(String txt, String msg) {
+    Clipboard.setData(ClipboardData(text: txt));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ تم نسخ $msg'), duration: const Duration(seconds: 2)));
   }
 
-  Future<void> _saveChanges() async {
-    await VaultStorage.saveVault(widget.pin, defaultEmail, items);
+  String _genPass() {
+    const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#\$%&*';
+    final r = Random.secure();
+    return List.generate(14, (_) => c[r.nextInt(c.length)]).join();
   }
 
-  String _generateStrongPassword({int length = 14}) {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#\$%&*';
-    final rnd = Random.secure();
-    return List.generate(length, (_) => chars[rnd.nextInt(chars.length)]).join();
-  }
-
-  void _copyToClipboard(String text, String label) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('✅ تم نسخ $label إلى الحافظة!'),
-        backgroundColor: Colors.teal.shade700,
-        duration: const Duration(seconds: 2),
+  void _setEmailDialog() {
+    final ctrl = TextEditingController(text: myEmail);
+    showDialog(context: context, builder: (ctx) => Directionality(
+      textDirection: TextDirection.rtl,
+      child: AlertDialog(
+        title: const Text('📧 إيميلي الشخصي الموحّد'),
+        content: TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'example@gmail.com', labelText: 'اكتب إيميلك للتعبئة السريعة')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+          ElevatedButton(onPressed: () { setState(() => myEmail = ctrl.text.trim()); _save(); Navigator.pop(ctx); }, child: const Text('حفظ')),
+        ],
       ),
-    );
+    ));
   }
 
-  // نافذة تعيين الإيميل الشخصي الافتراضي للتعبئة السريعة
-  void _showSetDefaultEmailDialog() {
-    final emailCtrl = TextEditingController(text: defaultEmail);
-    showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF1E293B),
-          title: const Text('📧 إيميلي الشخصي الموحّد'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'اكتب إيميلك الشخصي هنا لكي تتمكن من إدراجه بضغطة زر واحدة عند إضافة أي حساب جديد:',
-                style: TextStyle(color: Colors.white70, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: emailCtrl,
-                keyboardType: TextInputType.emailAddress,
-                decoration: InputDecoration(
-                  hintText: 'example@gmail.com',
-                  prefixIcon: const Icon(Icons.email_outlined),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('إلغاء'),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.tealAccent,
-                foregroundColor: Colors.black,
-              ),
-              onPressed: () {
-                setState(() {
-                  defaultEmail = emailCtrl.text.trim();
-                });
-                _saveChanges();
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('✅ تم حفظ إيميلك الشخصي للتعبئة السريعة!')),
-                );
-              },
-              child: const Text('حفظ الإيميل'),
-            ),
+  void _backupDialog() {
+    final ctrl = TextEditingController();
+    final code = Storage.enc(jsonEncode({'pin': widget.pin, 'email': myEmail, 'items': items.map((e) => e.toJson()).toList()}));
+    showDialog(context: context, builder: (ctx) => Directionality(
+      textDirection: TextDirection.rtl,
+      child: AlertDialog(
+        title: const Text('🔄 نسخ احتياطي واستعادة'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ElevatedButton.icon(onPressed: () { _copy(code, 'كود النسخة الاحتياطية'); Navigator.pop(ctx); }, icon: const Icon(Icons.copy), label: const Text('نسخ الكود الاحتياطي المشفر')),
+            const Divider(height: 24),
+            TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'الصق الكود المشفر هنا للاستعادة')),
           ],
         ),
+        actions: [
+          ElevatedButton(onPressed: () {
+            try {
+              final d = jsonDecode(Storage.dec(ctrl.text));
+              setState(() {
+                if ((d['email'] ?? '').toString().isNotEmpty) myEmail = d['email'];
+                items = ((d['items'] as List?) ?? []).map((e) => PassItem.fromJson(Map<String, dynamic>.from(e))).toList();
+              });
+              _save(); Navigator.pop(ctx);
+            } catch (_) {}
+          }, child: const Text('استعادة الآن')),
+        ],
       ),
-    );
+    ));
   }
 
-  // نافذة النسخ الاحتياطي والاستعادة
-  void _showBackupDialog() {
-    final importCtrl = TextEditingController();
-    final exportCode = VaultStorage.encryptData(jsonEncode({
-      'pin': widget.pin,
-      'defaultEmail': defaultEmail,
-      'items': items.map((e) => e.toJson()).toList(),
-    }));
+  void _editDialog({PassItem? item}) {
+    final tCtrl = TextEditingController(text: item?.title ?? '');
+    final uCtrl = TextEditingController(text: item?.user ?? myEmail);
+    final pCtrl = TextEditingController(text: item?.pass ?? '');
+    final nCtrl = TextEditingController(text: item?.notes ?? '');
 
-    showDialog(
-      context: context,
+    showModalBottomSheet(
+      context: context, isScrollControlled: true, backgroundColor: const Color(0xFF1E293B),
       builder: (ctx) => Directionality(
         textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF1E293B),
-          title: const Text('🔄 نسخ احتياطي واستعادة'),
-          content: SingleChildScrollView(
+        child: Padding(
+          padding: EdgeInsets.only(left: 16, right: 16, top: 16, bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
+          child: SingleChildScrollView(
             child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  '1. تصدير كلمات مرورك (انسخ هذا الكود المشفر واحتفظ به في مكان آمن):',
-                  style: TextStyle(fontSize: 13, color: Colors.white70),
+                Text(item == null ? '➕ إضافة حساب جديد' : '✏️ تعديل الحساب', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                TextField(controller: tCtrl, decoration: const InputDecoration(labelText: 'اسم الموقع أو التطبيق (مثل: جيميل، فيسبوك)')),
+                const SizedBox(height: 8),
+                TextField(controller: uCtrl, decoration: const InputDecoration(labelText: 'الإيميل الشخصي أو اسم المستخدم')),
+                if (myEmail.isNotEmpty) Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(onPressed: () => uCtrl.text = myEmail, icon: const Icon(Icons.bolt, size: 18), label: Text('وضع إيميلي: $myEmail')),
                 ),
                 const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.amberAccent,
-                    foregroundColor: Colors.black,
-                  ),
+                Row(children: [
+                  Expanded(child: TextField(controller: pCtrl, decoration: const InputDecoration(labelText: 'كلمة المرور'))),
+                  IconButton(tooltip: 'توليد كلمة مرور قوية', icon: const Icon(Icons.auto_fix_high, color: Colors.amberAccent), onPressed: () => pCtrl.text = _genPass()),
+                ]),
+                const SizedBox(height: 8),
+                TextField(controller: nCtrl, decoration: const InputDecoration(labelText: 'ملاحظات (اختياري)')),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.tealAccent, foregroundColor: Colors.black),
                   onPressed: () {
-                    _copyToClipboard(exportCode, 'كود النسخة الاحتياطية المشفر');
-                    Navigator.pop(ctx);
+                    if (tCtrl.text.trim().isEmpty) return;
+                    setState(() {
+                      if (myEmail.isEmpty && uCtrl.text.contains('@')) myEmail = uCtrl.text.trim();
+                      if (item == null) {
+                        items.insert(0, PassItem(id: DateTime.now().millisecondsSinceEpoch.toString(), title: tCtrl.text.trim(), user: uCtrl.text.trim(), pass: pCtrl.text.trim(), notes: nCtrl.text.trim()));
+                      } else {
+                        item.title = tCtrl.text.trim(); item.user = uCtrl.text.trim(); item.pass = pCtrl.text.trim(); item.notes = nCtrl.text.trim();
+                      }
+                    });
+                    _save(); Navigator.pop(ctx);
                   },
-                  icon: const Icon(Icons.copy_all),
-                  label: const Text('نسخ الكود الاحتياطي المشفر'),
-                ),
-                const Divider(height: 28, color: Colors.white24),
-                const Text(
-                  '2. استعادة كلمات المرور (الصق الكود المشفر هنا لاسترجاع حساباتك):',
-                  style: TextStyle(fontSize: 13, color: Colors.white70),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: importCtrl,
-                  maxLines: 2,
-                  decoration: InputDecoration(
-                    hintText: 'الصق الكود المشفر هنا...',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.tealAccent,
-                    foregroundColor: Colors.black,
-                  ),
-                  onPressed: () {
-                    final raw = VaultStorage.decryptData(importCtrl.text);
-                    if (raw.isNotEmpty) {
-                      try {
-                        final decoded = jsonDecode(raw) as Map<String, dynamic>;
-                        final rawList = (decoded['items'] as List?) ?? [];
-                        setState(() {
-                          if ((decoded['defaultEmail'] ?? '').toString().isNotEmpty) {
-                            defaultEmail = decoded['defaultEmail'].toString();
-                          }
-                          items = rawList
-                              .map((e) => PasswordItem.fromJson(Map<String, dynamic>.from(e)))
-                              .toList();
-                        });
-                        _saveChanges();
-                        Navigator.pop(ctx);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('✅ تمت استعادة جميع كلمات المرور بنجاح!')),
-                        );
-                      } catch (_) {}
-                    }
-                  },
-                  icon: const Icon(Icons.restore),
-                  label: const Text('استعادة الحسابات الآن'),
+                  child: const Text('حفظ في الخزنة 🔒', style: TextStyle(fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
@@ -526,356 +274,59 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     );
   }
 
-  // نافذة إضافة أو تعديل حساب
-  void _showAddOrEditDialog({PasswordItem? existing}) {
-    final titleCtrl = TextEditingController(text: existing?.title ?? '');
-    final userCtrl = TextEditingController(
-      text: existing?.username ?? (defaultEmail.isNotEmpty ? defaultEmail : ''),
-    );
-    final passCtrl = TextEditingController(text: existing?.password ?? '');
-    final notesCtrl = TextEditingController(text: existing?.notes ?? '');
-    String category = existing?.category ?? 'حسابات وإيميلات';
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF1E293B),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return Directionality(
-          textDirection: TextDirection.rtl,
-          child: StatefulBuilder(
-            builder: (context, setModalState) {
-              return Padding(
-                padding: EdgeInsets.only(
-                  left: 20,
-                  right: 20,
-                  top: 20,
-                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        existing == null ? '➕ إضافة حساب أو كلمة مرور جديدة' : '✏️ تعديل بيانات الحساب',
-                        style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: titleCtrl,
-                        decoration: InputDecoration(
-                          labelText: 'اسم الحساب (مثل: إيميلي الجيميل، فيسبوك، GitHub)',
-                          prefixIcon: const Icon(Icons.label_outline),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: userCtrl,
-                        keyboardType: TextInputType.emailAddress,
-                        decoration: InputDecoration(
-                          labelText: 'الإيميل الشخصي أو اسم المستخدم أو الرقم',
-                          prefixIcon: const Icon(Icons.alternate_email),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                      if (defaultEmail.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: ActionChip(
-                            backgroundColor: Colors.teal.shade900,
-                            avatar: const Icon(Icons.bolt, color: Colors.amberAccent, size: 18),
-                            label: Text(
-                              'إدراج إيميلي: $defaultEmail',
-                              style: const TextStyle(fontSize: 12, color: Colors.white),
-                            ),
-                            onPressed: () {
-                              setModalState(() {
-                                userCtrl.text = defaultEmail;
-                              });
-                            },
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: passCtrl,
-                              decoration: InputDecoration(
-                                labelText: 'كلمة المرور الخاصة بالحساب',
-                                prefixIcon: const Icon(Icons.key),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.amber.shade700,
-                              foregroundColor: Colors.black,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                            onPressed: () {
-                              setModalState(() {
-                                passCtrl.text = _generateStrongPassword();
-                              });
-                            },
-                            icon: const Icon(Icons.auto_fix_high, size: 20),
-                            label: const Text('توليد', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: notesCtrl,
-                        decoration: InputDecoration(
-                          labelText: 'ملاحظات إضافية (رقم مرتبط، رمز احتياطي - اختياري)',
-                          prefixIcon: const Icon(Icons.notes),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        value: category,
-                        decoration: InputDecoration(
-                          labelText: 'التصنيف',
-                          prefixIcon: const Icon(Icons.category_outlined),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        items: categories
-                            .where((c) => c != 'الكل')
-                            .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                            .toList(),
-                        onChanged: (val) {
-                          if (val != null) {
-                            setModalState(() => category = val);
-                          }
-                        },
-                      ),
-                      const SizedBox(height: 20),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.tealAccent,
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: () {
-                          if (titleCtrl.text.trim().isEmpty || passCtrl.text.trim().isEmpty) {
-                            return;
-                          }
-                          setState(() {
-                            // إذا لم يكن هناك إيميل افتراضي محفوظ وكان المدخل يحتوي على @ نحفظه تلقائياً
-                            if (defaultEmail.isEmpty && userCtrl.text.contains('@')) {
-                              defaultEmail = userCtrl.text.trim();
-                            }
-                            if (existing == null) {
-                              items.insert(
-                                0,
-                                PasswordItem(
-                                  id: DateTime.now().millisecondsSinceEpoch.toString(),
-                                  title: titleCtrl.text.trim(),
-                                  username: userCtrl.text.trim(),
-                                  password: passCtrl.text.trim(),
-                                  notes: notesCtrl.text.trim(),
-                                  category: category,
-                                ),
-                              );
-                            } else {
-                              existing.title = titleCtrl.text.trim();
-                              existing.username = userCtrl.text.trim();
-                              existing.password = passCtrl.text.trim();
-                              existing.notes = notesCtrl.text.trim();
-                              existing.category = category;
-                            }
-                          });
-                          _saveChanges();
-                          Navigator.pop(ctx);
-                        },
-                        child: const Text(
-                          'حفظ الحساب في الخزنة 🔒',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
-
-  IconData _getCategoryIcon(String category) {
-    switch (category) {
-      case 'حسابات وإيميلات':
-        return Icons.mark_email_read_outlined;
-      case 'تواصل اجتماعي':
-        return Icons.public;
-      case 'بنوك ومحافظ':
-        return Icons.account_balance_wallet_outlined;
-      case 'شبكات Wi-Fi':
-        return Icons.wifi;
-      default:
-        return Icons.vpn_key_outlined;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final filtered = items.where((item) {
-      final matchesCat = selectedCategory == 'الكل' || item.category == selectedCategory;
-      final matchesSearch = item.title.toLowerCase().contains(searchQuery.toLowerCase()) ||
-          item.username.toLowerCase().contains(searchQuery.toLowerCase()) ||
-          item.notes.toLowerCase().contains(searchQuery.toLowerCase());
-      return matchesCat && matchesSearch;
-    }).toList();
-
+    final list = items.where((e) => e.title.toLowerCase().contains(search.toLowerCase()) || e.user.toLowerCase().contains(search.toLowerCase())).toList();
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1E293B),
-        title: const Row(
-          children: [
-            Icon(Icons.shield, color: Colors.tealAccent),
-            SizedBox(width: 8),
-            Text('خزنتي الشخصية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 19)),
-          ],
-        ),
+        title: const Text('خزنتي الشخصية 🔐'),
         actions: [
-          IconButton(
-            tooltip: 'تعيين إيميلي الشخصي السريع',
-            icon: const Icon(Icons.alternate_email, color: Colors.tealAccent),
-            onPressed: _showSetDefaultEmailDialog,
-          ),
-          IconButton(
-            tooltip: 'نسخ احتياطي واستعادة',
-            icon: const Icon(Icons.cloud_sync_outlined, color: Colors.white),
-            onPressed: _showBackupDialog,
-          ),
-          IconButton(
-            tooltip: 'قفل الخزنة',
-            icon: const Icon(Icons.lock_outline, color: Colors.amberAccent),
-            onPressed: () {
-              Navigator.of(context).pushReplacement(
-                MaterialPageRoute(
-                  builder: (_) => const Directionality(
-                    textDirection: TextDirection.rtl,
-                    child: LockScreen(),
-                  ),
-                ),
-              );
-            },
-          ),
+          IconButton(icon: const Icon(Icons.alternate_email, color: Colors.tealAccent), onPressed: _setEmailDialog),
+          IconButton(icon: const Icon(Icons.cloud_sync_outlined), onPressed: _backupDialog),
+          IconButton(icon: const Icon(Icons.lock_outline, color: Colors.amberAccent), onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const Directionality(textDirection: TextDirection.rtl, child: LockPage())))),
         ],
       ),
       body: Column(
         children: [
-          // شريط الإيميل الشخصي السريع في الأعلى
           InkWell(
-            onTap: _showSetDefaultEmailDialog,
+            onTap: _setEmailDialog,
             child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: Colors.teal.withOpacity(0.15),
-              child: Row(
-                children: [
-                  const Icon(Icons.email, size: 18, color: Colors.tealAccent),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      defaultEmail.isEmpty
-                          ? 'اضغط هنا لحفظ إيميلك الشخصي الرئيسي للتعبئة السريعة'
-                          : 'إيميلي الشخصي: $defaultEmail',
-                      style: const TextStyle(fontSize: 13, color: Colors.tealAccent),
-                    ),
-                  ),
-                  if (defaultEmail.isNotEmpty)
-                    IconButton(
-                      constraints: const BoxConstraints(),
-                      padding: EdgeInsets.zero,
-                      icon: const Icon(Icons.copy, size: 18, color: Colors.tealAccent),
-                      onPressed: () => _copyToClipboard(defaultEmail, 'إيميلك الشخصي'),
-                    ),
-                ],
-              ),
+              width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), color: Colors.teal.withOpacity(0.15),
+              child: Row(children: [
+                const Icon(Icons.email, size: 18, color: Colors.tealAccent), const SizedBox(width: 8),
+                Expanded(child: Text(myEmail.isEmpty ? 'اضغط هنا لحفظ إيميلك الشخصي الرئيسي' : 'إيميلي الشخصي: $myEmail', style: const TextStyle(color: Colors.tealAccent, fontSize: 13))),
+                if (myEmail.isNotEmpty) IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: const Icon(Icons.copy, size: 18, color: Colors.tealAccent), onPressed: () => _copy(myEmail, 'إيميلك الشخصي')),
+              ]),
             ),
           ),
-
-          // شريط البحث
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: TextField(
-              onChanged: (val) => setState(() => searchQuery = val),
-              decoration: InputDecoration(
-                hintText: 'ابحث باسم الحساب، الإيميل، أو الملاحظات...',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                fillColor: const Color(0xFF1E293B),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide.none,
-                ),
-              ),
-            ),
+            padding: const EdgeInsets.all(12),
+            child: TextField(onChanged: (v) => setState(() => search = v), decoration: InputDecoration(hintText: 'ابحث عن حساب أو إيميل...', prefixIcon: const Icon(Icons.search), filled: true, fillColor: const Color(0xFF1E293B), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none))),
           ),
-
-          // شريط التصنيفات
-          SizedBox(
-            height: 44,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              itemCount: categories.length,
-              itemBuilder: (context, index) {
-                final cat = categories[index];
-                final isSelected = cat == selectedCategory;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: ChoiceChip(
-                    label: Text(cat),
-                    selected: isSelected,
-                    selectedColor: Colors.tealAccent,
-                    labelStyle: TextStyle(
-                      color: isSelected ? Colors.black : Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    onSelected: (_) => setState(() => selectedCategory = cat),
-                  ),
-                );
-              },
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          // قائمة الحسابات وكلمات المرور
           Expanded(
-            child: filtered.isEmpty
-                ? const Center(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 80),
+              itemCount: list.length,
+              itemBuilder: (ctx, i) {
+                final it = list[i];
+                final vis = shown.contains(it.id);
+                return Card(
+                  color: const Color(0xFF1E293B), margin: const EdgeInsets.only(bottom: 10),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
                     child: Column(
-                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.lock_clock_outlined, size: 64, color: Colors.white30),
-                        SizedBox(height: 12),
-                        Text(
-                          'لا توجد حسابات هنا بعد.\nاضغط على زر (إضافة حساب) بالأسفل لحفظ كلمات مرورك!',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white54, fontSize: 15),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 85),
-                    itemCount: filtered.length,
-                    itemBuilder: (
+                        Row(children: [
+                          const Icon(Icons.vpn_key, color: Colors.tealAccent, size: 20), const SizedBox(width: 8),
+                          Expanded(child: Text(it.title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold))),
+                          IconButton(icon: const Icon(Icons.edit, size: 20), onPressed: () => _editDialog(item: it)),
+                          IconButton(icon: const Icon(Icons.delete_outline, size: 20, color: Colors.redAccent), onPressed: () { setState(() => items.removeWhere((x) => x.id == it.id)); _save(); }),
+                        ]),
+                        if (it.user.isNotEmpty) Container(
+                          margin: const EdgeInsets.only(top: 6), padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(color: const Color(0xFF0F172A), borderRadius: BorderRadius.circular(8)),
+                          child: Row(children: [
+                            const Icon(Icons.person_outline, size: 16, color: Colors.cyanAccent), const SizedBox(width: 6),
+                            Expanded(child: Text(it.user, style: const TextStyle(fontSize: 14))),
+                            IconButton
