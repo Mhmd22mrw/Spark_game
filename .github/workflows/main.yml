@@ -17,22 +17,41 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: '17'
+          java-version: '21'
 
       - name: 3. Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
 
-      - name: 4. Build APK
+      - name: 4. Build APK with Custom Name & Icon
         run: |
-          flutter create --project-name spark_catcher temp_project
+          flutter create --project-name my_secret_vault temp_project
           cp main.dart temp_project/lib/main.dart
           cd temp_project
+
+          # 1. تغيير اسم التطبيق الذي يظهر تحت الأيقونة في الهاتف إلى "خزنتي السرية"
+          sed -i 's/android:label="my_secret_vault"/android:label="خزنتي السرية"/g' android/app/src/main/AndroidManifest.xml
+
+          # 2. رسم أيقونة احترافية (خلفية داكنة مع قفل ذهبي ودرع فيروزي) وتوليدها تلقائياً
+          sudo apt-get update && sudo apt-get install -y imagemagick
+          convert -size 512x512 xc:"#0F172A" \
+            -fill "#1E293B" -stroke "#64FFDA" -strokewidth 14 -draw "roundrectangle 46,46 466,466 90,90" \
+            -fill none -stroke "#FFD54F" -strokewidth 26 -draw "roundrectangle 196,125 316,265 55,55" \
+            -fill "#64FFDA" -stroke none -draw "roundrectangle 156,225 356,395 30,30" \
+            -fill "#0F172A" -draw "circle 256,295 256,318" \
+            -fill "#0F172A" -draw "rectangle 244,305 268,355" \
+            icon.png
+
+          flutter pub add --dev flutter_launcher_icons
+          printf "\nflutter_launcher_icons:\n  android: true\n  image_path: \"icon.png\"\n" >> pubspec.yaml
+          dart run flutter_launcher_icons
+
+          # 3. بناء ملف الـ APK النهائي
           flutter build apk --release
 
       - name: 5. Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Spark-Catcher-APK
+          name: My-Secret-Vault-APK
           path: temp_project/build/app/outputs/flutter-apk/app-release.apk
