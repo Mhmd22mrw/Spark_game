@@ -1,9 +1,12 @@
-name: Build Flutter APK Automatically
+name: Build Signed APK and Web App
 
 on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -23,31 +26,46 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          cache: true
 
-      - name: 4. Build APK with Native APK Share & Biometrics
+      - name: 4. Build Signed Release APK & PWA
         run: |
-          flutter create --project-name personal_vault --org com.example temp_project
+          # تسريع التحميل عبر خوادم Google لتجنب خطأ 429
+          mkdir -p ~/.gradle
+          cat << 'EOF' > ~/.gradle/init.gradle
+          allprojects {
+              buildscript {
+                  repositories {
+                      maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
+                      google()
+                      mavenCentral()
+                  }
+              }
+              repositories {
+                  maven { url "https://maven-central.storage-download.googleapis.com/maven2/" }
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+
+          flutter create --project-name personal_vault --org com.mhmd.vault temp_project
           cp main.dart temp_project/lib/main.dart
           cd temp_project
 
-          # 1. تغيير اسم التطبيق وإضافة صلاحية البصمة وموفر مشاركة ملف الـ APK
+          # 1. إعداد اسم التطبيق وصلاحيات الأندرويد
           sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"\/>/g' android/app/src/main/AndroidManifest.xml
           sed -i 's/android:label="personal_vault"/android:label="خزنتي الشخصية"/g' android/app/src/main/AndroidManifest.xml
 
           mkdir -p android/app/src/main/res/xml
-          cat << 'EOF' > android/app/src/main/res/xml/file_paths.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <paths>
-              <cache-path name="shared_apk" path="." />
-          </paths>
-          EOF
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<paths>\n    <cache-path name="shared_apk" path="." />\n</paths>\n' > android/app/src/main/res/xml/file_paths.xml
 
           sed -i 's/<\/application>/<provider android:name="androidx.core.content.FileProvider" android:authorities="\${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml\/file_paths"\/><\/provider><\/application>/g' android/app/src/main/AndroidManifest.xml
 
-          # 2. كتابة كود الأندرويد الأصلي لمشاركة ملف الـ APK وتشغيل البصمة
+          # 2. كتابة كود مشاركة الـ APK والبصمة في أندرويد
           MAIN_KT=$(find android/app/src/main/kotlin -name "MainActivity.kt")
           cat << 'EOF' > "$MAIN_KT"
-          package com.example.personal_vault
+          package com.mhmd.vault.personal_vault
 
           import android.app.KeyguardManager
           import android.content.Context
@@ -126,10 +144,45 @@ jobs:
           printf "\nflutter_launcher_icons:\n  android: true\n  image_path: \"icon.png\"\n" >> pubspec.yaml
           dart run flutter_launcher_icons
 
-          flutter build apk --release
+          # 4. إنشاء شهادة توقيع رسمية ثابتة (Release Keystore) وربطها ببناء الأندرويد
+          keytool -genkey -v -keystore android/app/upload-keystore.jks \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias vault_key \
+            -dname "CN=Mhmd Developer, OU=Security, O=PersonalVault, L=Abidjan, S=CI, C=CI" \
+            -storepass VaultPass2026 -keypass VaultPass2026
 
-      - name: 5. Upload APK
+          # استبدال إعداد التوقيع التجريبي بالتوقيع الرسمي الجديد
+          if [ -f "android/app/build.gradle.kts" ]; then
+            cat << 'EOF' > android/app/signing_patch.gradle.kts
+            signingConfigs {
+                create("release") {
+                    keyAlias = "vault_key"
+                    keyPassword = "VaultPass2026"
+                    storeFile = file("upload-keystore.jks")
+                    storePassword = "VaultPass2026"
+                }
+            }
+            EOF
+            sed -i '/buildTypes {/i \    signingConfigs {\n        create("release") {\n            keyAlias = "vault_key"\n            keyPassword = "VaultPass2026"\n            storeFile = file("upload-keystore.jks")\n            storePassword = "VaultPass2026"\n        }\n    }' android/app/build.gradle.kts
+            sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("release")/g' android/app/build.gradle.kts
+          fi
+
+          # 5. بناء الـ APK الموقّع رسمياً + بناء نسخة الويب القابلة للتثبيت الفوري (PWA)
+          flutter build apk --release || flutter build apk --release
+          sed -i 's/"name": "personal_vault"/"name": "خزنتي الشخصية"/g' web/manifest.json
+          sed -i 's/"short_name": "personal_vault"/"short_name": "خزنتي الشخصية"/g' web/manifest.json
+          cp icon.png web/icons/Icon-192.png
+          cp icon.png web/icons/Icon-512.png
+          flutter build web --release --base-href "/${GITHUB_REPOSITORY#*/}/"
+
+      - name: 5. Upload Signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: Personal-Vault-APK
+          name: Signed-Personal-Vault-APK
           path: temp_project/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: 6. Publish Instant Install Web App (PWA)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./temp_project/build/web
