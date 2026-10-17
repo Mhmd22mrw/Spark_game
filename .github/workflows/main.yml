@@ -24,16 +24,95 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: 4. Build APK with Custom Name & Icon
+      - name: 4. Build APK with Native APK Share & Biometrics
         run: |
-          flutter create --project-name personal_vault temp_project
+          flutter create --project-name personal_vault --org com.example temp_project
           cp main.dart temp_project/lib/main.dart
           cd temp_project
 
-          # تغيير اسم التطبيق الخارجي على الهاتف إلى "خزنتي الشخصية"
+          # 1. تغيير اسم التطبيق وإضافة صلاحية البصمة وموفر مشاركة ملف الـ APK
+          sed -i 's/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">/<manifest xmlns:android="http:\/\/schemas.android.com\/apk\/res\/android">\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"\/>/g' android/app/src/main/AndroidManifest.xml
           sed -i 's/android:label="personal_vault"/android:label="خزنتي الشخصية"/g' android/app/src/main/AndroidManifest.xml
 
-          # رسم وتوليد أيقونة القفل والدرع الاحترافية تلقائياً
+          mkdir -p android/app/src/main/res/xml
+          cat << 'EOF' > android/app/src/main/res/xml/file_paths.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <cache-path name="shared_apk" path="." />
+          </paths>
+          EOF
+
+          sed -i 's/<\/application>/<provider android:name="androidx.core.content.FileProvider" android:authorities="\${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml\/file_paths"\/><\/provider><\/application>/g' android/app/src/main/AndroidManifest.xml
+
+          # 2. كتابة كود الأندرويد الأصلي لمشاركة ملف الـ APK وتشغيل البصمة
+          MAIN_KT=$(find android/app/src/main/kotlin -name "MainActivity.kt")
+          cat << 'EOF' > "$MAIN_KT"
+          package com.example.personal_vault
+
+          import android.app.KeyguardManager
+          import android.content.Context
+          import android.content.Intent
+          import androidx.core.content.FileProvider
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+          import java.io.File
+
+          class MainActivity: FlutterActivity() {
+              private val CHANNEL = "vault_native_channel"
+              private var authResult: MethodChannel.Result? = null
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+                      when (call.method) {
+                          "shareApk" -> {
+                              try {
+                                  val apkFile = File(applicationContext.applicationInfo.sourceDir)
+                                  val sharedApk = File(cacheDir, "خزنتي_الشخصية.apk")
+                                  apkFile.copyTo(sharedApk, overwrite = true)
+                                  val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", sharedApk)
+                                  val intent = Intent(Intent.ACTION_SEND).apply {
+                                      type = "application/vnd.android.package-archive"
+                                      putExtra(Intent.EXTRA_STREAM, uri)
+                                      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                  }
+                                  startActivity(Intent.createChooser(intent, "مشاركة تطبيق خزنتي الشخصية APK"))
+                                  result.success(true)
+                              } catch (e: Exception) {
+                                  result.error("ERR", e.message, null)
+                              }
+                          }
+                          "authenticate" -> {
+                              val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                              if (km.isKeyguardSecure) {
+                                  authResult = result
+                                  val intent = km.createConfirmDeviceCredentialIntent("بصمة الخزنة الشخصية", "امسح بصمتك أو قفل الشاشة لفتح الخزنة")
+                                  if (intent != null) {
+                                      startActivityForResult(intent, 999)
+                                  } else {
+                                      result.success(false)
+                                  }
+                              } else {
+                                  result.success(false)
+                              }
+                          }
+                          else -> result.notImplemented()
+                      }
+                  }
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == 999) {
+                      authResult?.success(resultCode == RESULT_OK)
+                      authResult = null
+                  }
+              }
+          }
+          EOF
+
+          # 3. رسم وتوليد أيقونة القفل والدرع الاحترافية
           sudo apt-get update && sudo apt-get install -y imagemagick
           convert -size 512x512 xc:"#0F172A" \
             -fill "#1E293B" -stroke "#64FFDA" -strokewidth 14 -draw "roundrectangle 46,46 466,466 90,90" \
