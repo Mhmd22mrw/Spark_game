@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+const platform = MethodChannel('vault_native_channel');
+
 void main() {
   runApp(const PasswordVaultApp());
 }
@@ -100,13 +102,13 @@ class VaultStorage {
         }
       }
     } catch (_) {}
-    return {'pin': '', 'defaultEmail': '', 'items': []};
+    return {'pin': '', 'useBio': false, 'items': []};
   }
 
-  static Future<void> saveVault(String pin, String defaultEmail, List<PasswordItem> items) async {
+  static Future<void> saveVault(String pin, bool useBio, List<PasswordItem> items) async {
     final data = {
       'pin': pin,
-      'defaultEmail': defaultEmail,
+      'useBio': useBio,
       'items': items.map((e) => e.toJson()).toList(),
     };
     await _file.writeAsString(encryptData(jsonEncode(data)));
@@ -121,9 +123,9 @@ class LockScreen extends StatefulWidget {
 }
 
 class _LockScreenState extends State<LockScreen> {
-  String savedPin = '', defaultEmail = '', enteredPin = '', errorMessage = '';
+  String savedPin = '', enteredPin = '', errorMessage = '';
+  bool useBio = false, isLoading = true;
   List<PasswordItem> items = [];
-  bool isLoading = true;
 
   @override
   void initState() {
@@ -136,10 +138,20 @@ class _LockScreenState extends State<LockScreen> {
     final rawItems = (data['items'] as List?) ?? [];
     setState(() {
       savedPin = (data['pin'] ?? '').toString();
-      defaultEmail = (data['defaultEmail'] ?? '').toString();
+      useBio = data['useBio'] == true;
       items = rawItems.map((e) => PasswordItem.fromJson(Map<String, dynamic>.from(e))).toList();
       isLoading = false;
     });
+    if (savedPin.isNotEmpty && useBio) {
+      _authenticateWithBio();
+    }
+  }
+
+  Future<void> _authenticateWithBio() async {
+    try {
+      final bool ok = await platform.invokeMethod('authenticate');
+      if (ok) _openVault();
+    } catch (_) {}
   }
 
   void _onNumberPress(String num) {
@@ -161,15 +173,7 @@ class _LockScreenState extends State<LockScreen> {
   Future<void> _verifyOrSetPin() async {
     if (savedPin.isEmpty) {
       savedPin = enteredPin;
-      items.add(PasswordItem(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        title: 'إيميلي الشخصي الرئيسي (Gmail)',
-        username: 'اضغط على القلم ✏️ لكتابة إيميلك',
-        password: 'اكتب كلمة المرور هنا',
-        notes: 'الحساب الأساسي المرتبط بكل حساباتي',
-        category: 'حسابات وإيميلات',
-      ));
-      await VaultStorage.saveVault(savedPin, defaultEmail, items);
+      await VaultStorage.saveVault(savedPin, useBio, items);
       _openVault();
     } else if (enteredPin == savedPin) {
       _openVault();
@@ -185,7 +189,7 @@ class _LockScreenState extends State<LockScreen> {
     Navigator.of(context).pushReplacement(MaterialPageRoute(
       builder: (_) => Directionality(
         textDirection: TextDirection.rtl,
-        child: VaultHomeScreen(pin: savedPin, initialDefaultEmail: defaultEmail, initialItems: items),
+        child: VaultHomeScreen(pin: savedPin, initialUseBio: useBio, initialItems: items),
       ),
     ));
   }
@@ -202,7 +206,7 @@ class _LockScreenState extends State<LockScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.lock_person_rounded, size: 76, color: Colors.tealAccent),
+              const Icon(Icons.lock_person_rounded, size: 72, color: Colors.tealAccent),
               const SizedBox(height: 16),
               Text(
                 isFirstTime ? 'إنشاء رقم سري لخزنتك' : 'أدخل الرقم السري للفتح',
@@ -210,11 +214,11 @@ class _LockScreenState extends State<LockScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                isFirstTime ? 'اختر 4 أرقام لحماية إيميلك وكلمات مرورك' : 'جميع كلمات مرورك مشفرة ومحفوظة على هاتفك',
+                isFirstTime ? 'اختر 4 أرقام لحماية كلمات مرورك' : 'جميع كلمات مرورك مشفرة ومحفوظة على هاتفك',
                 style: const TextStyle(color: Colors.white60, fontSize: 14),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: List.generate(4, (index) {
@@ -232,10 +236,10 @@ class _LockScreenState extends State<LockScreen> {
                 }),
               ),
               if (errorMessage.isNotEmpty) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
                 Text(errorMessage, style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
               ],
-              const SizedBox(height: 40),
+              const SizedBox(height: 32),
               SizedBox(
                 width: 280,
                 child: GridView.count(
@@ -246,7 +250,13 @@ class _LockScreenState extends State<LockScreen> {
                   physics: const NeverScrollableScrollPhysics(),
                   children: [
                     for (var i = 1; i <= 9; i++) _buildKeyButton('$i'),
-                    const SizedBox.shrink(),
+                    useBio && !isFirstTime
+                        ? IconButton(
+                            tooltip: 'الدخول بالبصمة',
+                            onPressed: _authenticateWithBio,
+                            icon: const Icon(Icons.fingerprint, size: 38, color: Colors.tealAccent),
+                          )
+                        : const SizedBox.shrink(),
                     _buildKeyButton('0'),
                     IconButton(
                       onPressed: _onBackspace,
@@ -277,13 +287,14 @@ class _LockScreenState extends State<LockScreen> {
 }
 
 class VaultHomeScreen extends StatefulWidget {
-  final String pin, initialDefaultEmail;
+  final String pin;
+  final bool initialUseBio;
   final List<PasswordItem> initialItems;
 
   const VaultHomeScreen({
     super.key,
     required this.pin,
-    required this.initialDefaultEmail,
+    required this.initialUseBio,
     required this.initialItems,
   });
 
@@ -293,7 +304,8 @@ class VaultHomeScreen extends StatefulWidget {
 
 class _VaultHomeScreenState extends State<VaultHomeScreen> {
   late List<PasswordItem> items;
-  late String defaultEmail;
+  late String currentPin;
+  late bool useBio;
   String searchQuery = '', selectedCategory = 'الكل';
   final Set<String> visiblePasswords = {};
 
@@ -310,11 +322,12 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
   void initState() {
     super.initState();
     items = List.from(widget.initialItems);
-    defaultEmail = widget.initialDefaultEmail;
+    currentPin = widget.pin;
+    useBio = widget.initialUseBio;
   }
 
   Future<void> _saveChanges() async {
-    await VaultStorage.saveVault(widget.pin, defaultEmail, items);
+    await VaultStorage.saveVault(currentPin, useBio, items);
   }
 
   String _generateStrongPassword({int length = 14}) {
@@ -332,9 +345,46 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     ));
   }
 
-  // نافذة مشاركة التطبيق مع الأصدقاء
-  void _showShareAppDialog() {
-    const shareMsg = '🔐 جرب تطبيقي الجديد "خزنتي الشخصية" لحفظ وإدارة الإيميلات وكلمات المرور بأمان تام على هاتفك وبدون إنترنت!\nتواصل معي لإرسال ملف تثبيت التطبيق (APK) لك مباشرة 📲';
+  // مشاركة ملف الـ APK مباشرة عبر واتساب أو أي تطبيق
+  Future<void> _shareApkFile() async {
+    try {
+      await platform.invokeMethod('shareApk');
+    } catch (_) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('جاري تجهيز ملف الـ APK للمشاركة...')),
+      );
+    }
+  }
+
+  // تفعيل أو إيقاف البصمة
+  Future<void> _toggleBiometrics() async {
+    if (!useBio) {
+      try {
+        final bool ok = await platform.invokeMethod('authenticate');
+        if (ok) {
+          setState(() => useBio = true);
+          await _saveChanges();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('✅ تم ربط بصمة الهاتف بالتطبيق بنجاح!'), backgroundColor: Colors.teal),
+            );
+          }
+        }
+      } catch (_) {}
+    } else {
+      setState(() => useBio = false);
+      await _saveChanges();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم إيقاف الدخول بالبصمة')),
+        );
+      }
+    }
+  }
+
+  // نافذة تعديل كلمة مرور الدخول (الرقم السري للخزنة)
+  void _showChangePinDialog() {
+    final pinCtrl = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) => Directionality(
@@ -343,88 +393,37 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           backgroundColor: const Color(0xFF1E293B),
           title: const Row(
             children: [
-              Icon(Icons.share, color: Colors.cyanAccent),
+              Icon(Icons.password, color: Colors.amberAccent),
               SizedBox(width: 8),
-              Text('مشاركة التطبيق'),
+              Text('تغيير رمز الدخول', style: TextStyle(fontSize: 18)),
             ],
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'انسخ رسالة الدعوة وأرسلها لأصدقائك عبر واتساب أو تيليجرام مع ملف الـ APK الخاص بالتطبيق:',
-                style: TextStyle(color: Colors.white70, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Text(shareMsg, style: TextStyle(fontSize: 13, color: Colors.tealAccent)),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إغلاق')),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.tealAccent, foregroundColor: Colors.black),
-              onPressed: () {
-                _copyToClipboard(shareMsg, 'رسالة مشاركة التطبيق');
-                Navigator.pop(ctx);
-              },
-              icon: const Icon(Icons.copy),
-              label: const Text('نسخ رسالة الدعوة', style: TextStyle(fontWeight: FontWeight.bold)),
+          content: TextField(
+            controller: pinCtrl,
+            keyboardType: TextInputType.number,
+            maxLength: 4,
+            decoration: InputDecoration(
+              labelText: 'أدخل الرقم السري الجديد (4 أرقام)',
+              prefixIcon: const Icon(Icons.lock_reset),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showSetDefaultEmailDialog() {
-    final emailCtrl = TextEditingController(text: defaultEmail);
-    showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF1E293B),
-          title: const Text('📧 إيميلي الشخصي الموحّد'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'اكتب إيميلك الشخصي هنا لكي تتمكن من إدراجه بضغطة زر واحدة عند إضافة أي حساب جديد:',
-                style: TextStyle(color: Colors.white70, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: emailCtrl,
-                keyboardType: TextInputType.emailAddress,
-                decoration: InputDecoration(
-                  hintText: 'example@gmail.com',
-                  prefixIcon: const Icon(Icons.email_outlined),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ],
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.tealAccent, foregroundColor: Colors.black),
               onPressed: () {
-                setState(() => defaultEmail = emailCtrl.text.trim());
-                _saveChanges();
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('✅ تم حفظ إيميلك الشخصي للتعبئة السريعة!')),
-                );
+                final newPin = pinCtrl.text.trim();
+                if (newPin.length == 4 && int.tryParse(newPin) != null) {
+                  setState(() => currentPin = newPin);
+                  _saveChanges();
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('✅ تم تغيير الرقم السري للدخول بنجاح!'), backgroundColor: Colors.teal),
+                  );
+                }
               },
-              child: const Text('حفظ الإيميل'),
+              child: const Text('حفظ الرمز الجديد', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         ),
@@ -435,8 +434,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
   void _showBackupDialog() {
     final importCtrl = TextEditingController();
     final exportCode = VaultStorage.encryptData(jsonEncode({
-      'pin': widget.pin,
-      'defaultEmail': defaultEmail,
+      'pin': currentPin,
+      'useBio': useBio,
       'items': items.map((e) => e.toJson()).toList(),
     }));
 
@@ -484,9 +483,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                         final decoded = jsonDecode(raw) as Map<String, dynamic>;
                         final rawList = (decoded['items'] as List?) ?? [];
                         setState(() {
-                          if ((decoded['defaultEmail'] ?? '').toString().isNotEmpty) {
-                            defaultEmail = decoded['defaultEmail'].toString();
-                          }
                           items = rawList.map((e) => PasswordItem.fromJson(Map<String, dynamic>.from(e))).toList();
                         });
                         _saveChanges();
@@ -510,7 +506,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
   void _showAddOrEditDialog({PasswordItem? existing}) {
     final titleCtrl = TextEditingController(text: existing?.title ?? '');
-    final userCtrl = TextEditingController(text: existing?.username ?? (defaultEmail.isNotEmpty ? defaultEmail : ''));
+    final userCtrl = TextEditingController(text: existing?.username ?? '');
     final passCtrl = TextEditingController(text: existing?.password ?? '');
     final notesCtrl = TextEditingController(text: existing?.notes ?? '');
     String category = existing?.category ?? 'حسابات وإيميلات';
@@ -538,7 +534,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                   TextField(
                     controller: titleCtrl,
                     decoration: InputDecoration(
-                      labelText: 'اسم الحساب (مثل: إيميلي الجيميل، فيسبوك، GitHub)',
+                      labelText: 'اسم الحساب (مثل: جيميل، فيسبوك، GitHub)',
                       prefixIcon: const Icon(Icons.label_outline),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                     ),
@@ -548,23 +544,11 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                     controller: userCtrl,
                     keyboardType: TextInputType.emailAddress,
                     decoration: InputDecoration(
-                      labelText: 'الإيميل الشخصي أو اسم المستخدم أو الرقم',
-                      prefixIcon: const Icon(Icons.alternate_email),
+                      labelText: 'الإيميل أو اسم المستخدم أو الرقم',
+                      prefixIcon: const Icon(Icons.person_outline),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
-                  if (defaultEmail.isNotEmpty) ...[
-                    const SizedBox(height: 6),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: ActionChip(
-                        backgroundColor: Colors.teal.shade900,
-                        avatar: const Icon(Icons.bolt, color: Colors.amberAccent, size: 18),
-                        label: Text('إدراج إيميلي: $defaultEmail', style: const TextStyle(fontSize: 12, color: Colors.white)),
-                        onPressed: () => setModalState(() => userCtrl.text = defaultEmail),
-                      ),
-                    ),
-                  ],
                   const SizedBox(height: 12),
                   Row(
                     children: [
@@ -596,7 +580,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                   TextField(
                     controller: notesCtrl,
                     decoration: InputDecoration(
-                      labelText: 'ملاحظات إضافية (رقم مرتبط، رمز احتياطي - اختياري)',
+                      labelText: 'ملاحظات إضافية (اختياري)',
                       prefixIcon: const Icon(Icons.notes),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                     ),
@@ -625,7 +609,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                     onPressed: () {
                       if (titleCtrl.text.trim().isEmpty || passCtrl.text.trim().isEmpty) return;
                       setState(() {
-                        if (defaultEmail.isEmpty && userCtrl.text.contains('@')) defaultEmail = userCtrl.text.trim();
                         if (existing == null) {
                           items.insert(0, PasswordItem(
                             id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -681,21 +664,26 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         backgroundColor: const Color(0xFF1E293B),
         title: const Row(
           children: [
-            Icon(Icons.shield, color: Colors.tealAccent),
-            SizedBox(width: 8),
-            Text('خزنتي الشخصية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            Icon(Icons.shield, color: Colors.tealAccent, size: 22),
+            SizedBox(width: 6),
+            Text('خزنتي الشخصية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
           ],
         ),
         actions: [
           IconButton(
-            tooltip: 'مشاركة التطبيق مع أصدقائك',
+            tooltip: 'إرسال تطبيق APK للأصدقاء',
             icon: const Icon(Icons.share, color: Colors.cyanAccent),
-            onPressed: _showShareAppDialog,
+            onPressed: _shareApkFile,
           ),
           IconButton(
-            tooltip: 'تعيين إيميلي الشخصي السريع',
-            icon: const Icon(Icons.alternate_email, color: Colors.tealAccent),
-            onPressed: _showSetDefaultEmailDialog,
+            tooltip: useBio ? 'البصمة مفعلة (اضغط للإيقاف)' : 'ربط بصمة الهاتف بالتطبيق',
+            icon: Icon(Icons.fingerprint, color: useBio ? Colors.tealAccent : Colors.white54),
+            onPressed: _toggleBiometrics,
+          ),
+          IconButton(
+            tooltip: 'تغيير كلمة مرور الدخول',
+            icon: const Icon(Icons.password, color: Colors.amberAccent),
+            onPressed: _showChangePinDialog,
           ),
           IconButton(
             tooltip: 'نسخ احتياطي واستعادة',
@@ -704,7 +692,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           ),
           IconButton(
             tooltip: 'قفل الخزنة',
-            icon: const Icon(Icons.lock_outline, color: Colors.amberAccent),
+            icon: const Icon(Icons.lock_outline, color: Colors.redAccent),
             onPressed: () => Navigator.of(context).pushReplacement(
               MaterialPageRoute(builder: (_) => const Directionality(textDirection: TextDirection.rtl, child: LockScreen())),
             ),
@@ -713,33 +701,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       ),
       body: Column(
         children: [
-          InkWell(
-            onTap: _showSetDefaultEmailDialog,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: Colors.teal.withOpacity(0.15),
-              child: Row(
-                children: [
-                  const Icon(Icons.email, size: 18, color: Colors.tealAccent),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      defaultEmail.isEmpty ? 'اضغط هنا لحفظ إيميلك الشخصي الرئيسي للتعبئة السريعة' : 'إيميلي الشخصي: $defaultEmail',
-                      style: const TextStyle(fontSize: 13, color: Colors.tealAccent),
-                    ),
-                  ),
-                  if (defaultEmail.isNotEmpty)
-                    IconButton(
-                      constraints: const BoxConstraints(),
-                      padding: EdgeInsets.zero,
-                      icon: const Icon(Icons.copy, size: 18, color: Colors.tealAccent),
-                      onPressed: () => _copyToClipboard(defaultEmail, 'إيميلك الشخصي'),
-                    ),
-                ],
-              ),
-            ),
-          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             child: TextField(
